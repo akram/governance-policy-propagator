@@ -17,8 +17,9 @@ import (
 
 var _ = Describe("Test root policy metrics", Ordered, func() {
 	const (
-		policyName = "case9-test-policy"
-		policyYaml = "../resources/case9_templates/case9-test-policy.yaml"
+		policyName           = "case9-test-policy"
+		policyYaml           = "../resources/case9_templates/case9-test-policy.yaml"
+		replicatedPolicyYaml = "../resources/case9_templates/case9-test-replpolicy-managed1.yaml"
 	)
 
 	Describe("Create policy, placement and referenced resource in ns:"+testNamespace, func() {
@@ -38,7 +39,8 @@ var _ = Describe("Test root policy metrics", Ordered, func() {
 			By("Creating " + policyYaml)
 			utils.Kubectl("apply",
 				"-f", policyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, policyName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -55,15 +57,15 @@ var _ = Describe("Test root policy metrics", Ordered, func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+policyName, "managed1",
 				true, defaultTimeoutSeconds,
 			)
 			Expect(plc).ToNot(BeNil())
 
-			yamlPlc := utils.ParseYaml(case9ReplicatedPolicyYamlM1)
-			Eventually(func() interface{} {
+			yamlPlc := utils.ParseYaml(replicatedPolicyYaml)
+			Eventually(func(g Gomega) interface{} {
 				replicatedPlc := utils.GetWithTimeout(
 					clientHubDynamic,
 					gvrPolicy,
@@ -98,13 +100,15 @@ var _ = Describe("Test root policy metrics", Ordered, func() {
 			By("Checking metric endpoint for root policy hub template watches")
 			Eventually(func() interface{} {
 				return utils.GetMetrics("hub_templates_active_watches", "\"[0-9]\"")
-			}, defaultTimeoutSeconds, 1).Should(Equal([]string{"2"}))
+			}, defaultTimeoutSeconds, 1).Should(Equal([]string{"3"}))
 		})
 
 		cleanup := func() {
 			utils.Kubectl("delete",
 				"-f", policyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
 			opt := metav1.ListOptions{}
 			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 0, false, defaultTimeoutSeconds)
 		}

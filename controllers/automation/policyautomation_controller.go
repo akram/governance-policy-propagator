@@ -21,7 +21,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	policyv1 "open-cluster-management.io/governance-policy-propagator/api/v1"
 	policyv1beta1 "open-cluster-management.io/governance-policy-propagator/api/v1beta1"
@@ -45,7 +44,7 @@ func (r *PolicyAutomationReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named(ControllerName).
 		Watches(
-			&source.Kind{Type: &policyv1.Policy{}},
+			&policyv1.Policy{},
 			&common.EnqueueRequestsFromMapFunc{ToRequests: policyMapper(mgr.GetClient())},
 			builder.WithPredicates(policyPredicateFuncs)).
 		For(
@@ -197,7 +196,7 @@ func (r *PolicyAutomationReconciler) getViolationContext(
 
 	policyViolationsLimit := policyAutomation.Spec.Automation.PolicyViolationsLimit
 	if policyViolationsLimit == nil {
-		policyViolationsLimit = new(uint)
+		policyViolationsLimit = new(uint16)
 		*policyViolationsLimit = policyv1beta1.DefaultPolicyViolationsLimit
 	}
 
@@ -303,6 +302,20 @@ func (r *PolicyAutomationReconciler) Reconcile(
 	}
 
 	if policyAutomation.Annotations["policy.open-cluster-management.io/rerun"] == "true" {
+		AjExist, err := MatchPAResouceV(policyAutomation,
+			r.DynamicClient, policyAutomation.GetResourceVersion())
+		if err != nil {
+			log.Error(err, "Failed to compare Ansible job's resourceVersion")
+
+			return reconcile.Result{}, err
+		}
+
+		if AjExist {
+			log.Info("Ansiblejob already exist under this policyautomation resourceVersion")
+
+			return reconcile.Result{}, nil
+		}
+
 		targetList := common.FindNonCompliantClustersForPolicy(policy)
 		log.Info(
 			"Creating an Ansible job", "mode", "manual",
@@ -310,7 +323,7 @@ func (r *PolicyAutomationReconciler) Reconcile(
 
 		violationContext, _ := r.getViolationContext(ctx, policy, targetList, policyAutomation)
 
-		err = common.CreateAnsibleJob(
+		err = CreateAnsibleJob(
 			policyAutomation,
 			r.DynamicClient,
 			"manual",
@@ -360,7 +373,8 @@ func (r *PolicyAutomationReconciler) Reconcile(
 			if len(targetList) > 0 {
 				log.Info("Creating An Ansible job", "targetList", targetList)
 				violationContext, _ := r.getViolationContext(ctx, policy, targetList, policyAutomation)
-				err = common.CreateAnsibleJob(policyAutomation, r.DynamicClient, "scan", violationContext)
+				err = CreateAnsibleJob(policyAutomation, r.DynamicClient, "scan",
+					violationContext)
 				if err != nil {
 					return reconcile.Result{RequeueAfter: requeueAfter}, err
 				}
@@ -381,14 +395,23 @@ func (r *PolicyAutomationReconciler) Reconcile(
 			if len(targetList) > 0 {
 				log.Info("Creating an Ansible job", "targetList", targetList)
 
+				AjExist, err := MatchPAGeneration(policyAutomation,
+					r.DynamicClient, policyAutomation.GetGeneration())
+				if err != nil {
+					log.Error(err, "Failed to get Ansible job's generation")
+
+					return reconcile.Result{}, err
+				}
+				if AjExist {
+					return reconcile.Result{}, nil
+				}
 				violationContext, _ := r.getViolationContext(ctx, policy, targetList, policyAutomation)
-				err = common.CreateAnsibleJob(
+				err = CreateAnsibleJob(
 					policyAutomation,
 					r.DynamicClient,
 					string(policyv1beta1.Once),
 					violationContext,
 				)
-
 				if err != nil {
 					log.Error(err, "Failed to create the Ansible job")
 
@@ -493,13 +516,12 @@ func (r *PolicyAutomationReconciler) Reconcile(
 				}
 				log.Info("Creating An Ansible job", "trimmedTargetList", trimmedTargetList)
 				violationContext, _ := r.getViolationContext(ctx, policy, trimmedTargetList, policyAutomation)
-				err = common.CreateAnsibleJob(
+				err = CreateAnsibleJob(
 					policyAutomation,
 					r.DynamicClient,
 					string(policyv1beta1.EveryEvent),
 					violationContext,
 				)
-
 				if err != nil {
 					log.Error(err, "Failed to create the Ansible job")
 
@@ -520,7 +542,7 @@ func (r *PolicyAutomationReconciler) Reconcile(
 
 			policyAutomation.Status.ClustersWithEvent = eventMap
 			// use StatusWriter to update status subresource of a Kubernetes object
-			err = r.Status().Update(ctx, policyAutomation, &client.UpdateOptions{})
+			err = r.Status().Update(ctx, policyAutomation)
 			if err != nil {
 				log.Error(err, "Failed to update ClustersWithEvent in policyAutomation status")
 

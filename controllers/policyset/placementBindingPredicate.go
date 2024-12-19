@@ -14,23 +14,23 @@ import (
 // we only want to watch for pb contains policyset as a subject
 var pbPredicateFuncs = predicate.Funcs{
 	UpdateFunc: func(e event.UpdateEvent) bool {
-		// nolint: forcetypeassert
+		//nolint:forcetypeassert
 		pbObjNew := e.ObjectNew.(*policiesv1.PlacementBinding)
-		// nolint: forcetypeassert
+		//nolint:forcetypeassert
 		pbObjOld := e.ObjectOld.(*policiesv1.PlacementBinding)
 
-		return common.IsPbForPoicySet(pbObjNew) || common.IsPbForPoicySet(pbObjOld)
+		return common.IsPbForPolicySet(pbObjNew) || common.IsPbForPolicySet(pbObjOld)
 	},
 	CreateFunc: func(e event.CreateEvent) bool {
-		// nolint: forcetypeassert
+		//nolint:forcetypeassert
 		pbObj := e.Object.(*policiesv1.PlacementBinding)
 
-		return common.IsPbForPoicySet(pbObj)
+		return common.IsPbForPolicySet(pbObj)
 	},
 	DeleteFunc: func(e event.DeleteEvent) bool {
-		// nolint: forcetypeassert
+		//nolint:forcetypeassert
 		pbObj := e.Object.(*policiesv1.PlacementBinding)
 
-		return common.IsPbForPoicySet(pbObj)
+		return common.IsPbForPolicySet(pbObj)
 	},
 }

@@ -20,7 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	policyv1 "open-cluster-management.io/governance-policy-propagator/api/v1"
 	policyv1beta1 "open-cluster-management.io/governance-policy-propagator/api/v1beta1"
@@ -187,18 +186,26 @@ func (r *PolicySetReconciler) processPolicySet(ctx context.Context, plcSet *poli
 
 				err := r.Client.Get(ctx, pbNamespacedName, pb)
 				if err != nil {
-					log.V(1).Info("Error getting placement binding " + pbName)
+					if errors.IsNotFound(err) {
+						log.V(1).Info("The placement binding was not found", "placementBinding", pbName)
+					} else {
+						log.Error(err, "Failed to get the placement binding", "placementBinding", pbName)
+					}
+
+					continue
 				}
 
-				var decisions []appsv1.PlacementDecision
-				decisions, err = getDecisions(r.Client, *pb, childPlc)
+				var clusterDecisions []string
+				clusterDecisions, err = common.GetDecisions(ctx, r.Client, pb)
 				if err != nil {
-					log.Error(err, "Error getting placement decisions for binding "+pbName)
+					log.Error(
+						err, "Failed to get placement decisions for the placement binding", "placementBinding", pbName,
+					)
+
+					continue
 				}
 
-				for _, decision := range decisions {
-					clusters = append(clusters, decision.ClusterName)
-				}
+				clusters = append(clusters, clusterDecisions...)
 			}
 
 			// aggregate compliance state
@@ -231,7 +238,7 @@ func (r *PolicySetReconciler) processPolicySet(ctx context.Context, plcSet *poli
 		StatusMessage: getStatusMessage(disabledPolicies, unknownPolicies, deletedPolicies, pendingPolicies),
 	}
 	if showCompliance(compliancesFound, unknownPolicies, pendingPolicies) {
-		builtStatus.Compliant = string(aggregatedCompliance)
+		builtStatus.Compliant = aggregatedCompliance
 	}
 
 	if !equality.Semantic.DeepEqual(plcSet.Status, builtStatus) {
@@ -298,53 +305,31 @@ func showCompliance(compliancesFound []string, unknown []string, pending []strin
 	return false
 }
 
-// getDecisions gets the PlacementDecisions for a PlacementBinding
-func getDecisions(c client.Client, pb policyv1.PlacementBinding,
-	instance *policyv1.Policy,
-) ([]appsv1.PlacementDecision, error) {
-	if pb.PlacementRef.APIGroup == appsv1.SchemeGroupVersion.Group &&
-		pb.PlacementRef.Kind == "PlacementRule" {
-		d, err := common.GetApplicationPlacementDecisions(c, pb, instance, log)
-		if err != nil {
-			return nil, err
-		}
-
-		return d, nil
-	} else if pb.PlacementRef.APIGroup == clusterv1beta1.SchemeGroupVersion.Group &&
-		pb.PlacementRef.Kind == "Placement" {
-		d, err := common.GetClusterPlacementDecisions(c, pb, instance, log)
-		if err != nil {
-			return nil, err
-		}
-
-		return d, nil
-	}
-
-	return nil, fmt.Errorf("placement binding %s/%s reference is not valid", pb.Name, pb.Namespace)
-}
-
 // SetupWithManager sets up the controller with the Manager.
-func (r *PolicySetReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
+func (r *PolicySetReconciler) SetupWithManager(mgr ctrl.Manager, plrsEnabled bool) error {
+	ctrlBldr := ctrl.NewControllerManagedBy(mgr).
 		Named(ControllerName).
 		For(
 			&policyv1beta1.PolicySet{},
 			builder.WithPredicates(policySetPredicateFuncs)).
 		Watches(
-			&source.Kind{Type: &policyv1.Policy{}},
+			&policyv1.Policy{},
 			handler.EnqueueRequestsFromMapFunc(policyMapper(mgr.GetClient())),
 			builder.WithPredicates(policyPredicateFuncs)).
 		Watches(
-			&source.Kind{Type: &policyv1.PlacementBinding{}},
+			&policyv1.PlacementBinding{},
 			handler.EnqueueRequestsFromMapFunc(placementBindingMapper(mgr.GetClient())),
 			builder.WithPredicates(pbPredicateFuncs)).
 		Watches(
-			&source.Kind{Type: &appsv1.PlacementRule{}},
-			handler.EnqueueRequestsFromMapFunc(placementRuleMapper(mgr.GetClient()))).
-		Watches(
-			&source.Kind{Type: &clusterv1beta1.PlacementDecision{}},
-			handler.EnqueueRequestsFromMapFunc(placementDecisionMapper(mgr.GetClient()))).
-		Complete(r)
+			&clusterv1beta1.PlacementDecision{},
+			handler.EnqueueRequestsFromMapFunc(placementDecisionMapper(mgr.GetClient())))
+
+	if plrsEnabled {
+		ctrlBldr = ctrlBldr.Watches(&appsv1.PlacementRule{},
+			handler.EnqueueRequestsFromMapFunc(placementRuleMapper(mgr.GetClient())))
+	}
+
+	return ctrlBldr.Complete(r)
 }
 
 // Helper function to filter out compliance statuses that are not in scope

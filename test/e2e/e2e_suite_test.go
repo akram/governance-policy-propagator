@@ -5,6 +5,7 @@ package e2e
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/user"
@@ -22,12 +23,25 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+
+	"open-cluster-management.io/governance-policy-propagator/test/utils"
+)
+
+const (
+	IVAnnotation            = "policy.open-cluster-management.io/encryption-iv"
+	EncryptionKeySecret     = "policy-encryption-key"
+	LastRotatedAnnotation   = "policy.open-cluster-management.io/last-rotated"
+	RootPolicyLabel         = "policy.open-cluster-management.io/root-policy"
+	TriggerUpdateAnnotation = "policy.open-cluster-management.io/trigger-update"
 )
 
 var (
 	testNamespace         string
 	clientHub             kubernetes.Interface
 	clientHubDynamic      dynamic.Interface
+	kubeconfigHub         string
 	gvrPolicy             schema.GroupVersionResource
 	gvrPolicyAutomation   schema.GroupVersionResource
 	gvrPolicySet          schema.GroupVersionResource
@@ -37,8 +51,11 @@ var (
 	gvrPlacementDecision  schema.GroupVersionResource
 	gvrSecret             schema.GroupVersionResource
 	gvrAnsibleJob         schema.GroupVersionResource
+	gvrNamespace          schema.GroupVersionResource
 	defaultTimeoutSeconds int
 	defaultImageRegistry  string
+	clientToken           string
+	clientHubCtrlRuntime  client.Client
 )
 
 func TestE2e(t *testing.T) {
@@ -48,9 +65,15 @@ func TestE2e(t *testing.T) {
 
 func init() {
 	klog.SetOutput(GinkgoWriter)
+	klog.InitFlags(nil)
+	flag.StringVar(&kubeconfigHub, "kubeconfig_hub", "../../kubeconfig_hub_e2e",
+		"Location of the kubeconfig to use; defaults to current kubeconfig if set to an empty string")
 }
 
 var _ = BeforeSuite(func() {
+	By("Setup the controller-runtime logger")
+	ctrllog.SetLogger(GinkgoLogr)
+
 	By("Setup Hub client")
 	gvrPolicy = schema.GroupVersionResource{
 		Group: "policy.open-cluster-management.io", Version: "v1", Resource: "policies",
@@ -79,11 +102,26 @@ var _ = BeforeSuite(func() {
 	gvrAnsibleJob = schema.GroupVersionResource{
 		Group: "tower.ansible.com", Version: "v1alpha1", Resource: "ansiblejobs",
 	}
-	clientHub = NewKubeClient("", "", "")
-	clientHubDynamic = NewKubeClientDynamic("", "", "")
+	gvrNamespace = schema.GroupVersionResource{
+		Group: "", Version: "v1", Resource: "namespaces",
+	}
+	clientHub = NewKubeClient("", kubeconfigHub, "")
+	clientHubDynamic = NewKubeClientDynamic("", kubeconfigHub, "")
+
+	config, err := LoadConfig("", kubeconfigHub, "")
+	Expect(err).ToNot(HaveOccurred())
+
+	clientHubCtrlRuntime, err = client.New(config, client.Options{})
+	Expect(err).ToNot(HaveOccurred())
+
 	defaultImageRegistry = "quay.io/open-cluster-management"
 	testNamespace = "policy-propagator-test"
 	defaultTimeoutSeconds = 30
+
+	k8sConfig, err := LoadConfig("", "", "")
+	Expect(err).ToNot(HaveOccurred())
+	clientToken = k8sConfig.BearerToken
+
 	By("Create Namespace if needed")
 	namespaces := clientHub.CoreV1().Namespaces()
 	if _, err := namespaces.Get(
@@ -96,6 +134,32 @@ var _ = BeforeSuite(func() {
 		}, metav1.CreateOptions{})).NotTo(BeNil())
 	}
 	Expect(namespaces.Get(context.TODO(), testNamespace, metav1.GetOptions{})).NotTo(BeNil())
+})
+
+var _ = AfterSuite(func() {
+	By("Collecting workqueue_adds_total metrics")
+	wqAddsLines, err := utils.MetricsLines("workqueue_adds_total")
+	if err != nil {
+		GinkgoWriter.Println("Error getting workqueue_adds_total metrics: ", err)
+	}
+
+	GinkgoWriter.Println(wqAddsLines)
+
+	By("Collecting controller_runtime_reconcile_total metrics")
+	ctrlReconcileTotalLines, err := utils.MetricsLines("controller_runtime_reconcile_total")
+	if err != nil {
+		GinkgoWriter.Println("Error getting controller_runtime_reconcile_total metrics: ", err)
+	}
+
+	GinkgoWriter.Println(ctrlReconcileTotalLines)
+
+	By("Collecting controller_runtime_reconcile_time_seconds_sum metrics")
+	ctrlReconcileTimeLines, err := utils.MetricsLines("controller_runtime_reconcile_time_seconds_sum")
+	if err != nil {
+		GinkgoWriter.Println("Error getting controller_runtime_reconcile_time_seconds_sum metrics: ", err)
+	}
+
+	GinkgoWriter.Println(ctrlReconcileTimeLines)
 })
 
 func NewKubeClient(url, kubeconfig, context string) kubernetes.Interface {

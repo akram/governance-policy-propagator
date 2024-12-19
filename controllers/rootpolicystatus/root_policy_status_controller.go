@@ -6,20 +6,20 @@ import (
 	"context"
 	"sync"
 
-	"k8s.io/apimachinery/pkg/api/errors"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
+	appsv1 "open-cluster-management.io/multicloud-operators-subscription/pkg/apis/apps/placementrule/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	policiesv1 "open-cluster-management.io/governance-policy-propagator/api/v1"
 	"open-cluster-management.io/governance-policy-propagator/controllers/common"
-	"open-cluster-management.io/governance-policy-propagator/controllers/propagator"
 )
 
 const ControllerName string = "root-policy-status"
@@ -30,23 +30,41 @@ var log = ctrl.Log.WithName(ControllerName)
 //+kubebuilder:rbac:groups=policy.open-cluster-management.io,resources=policies/status,verbs=get;update;patch
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *RootPolicyStatusReconciler) SetupWithManager(mgr ctrl.Manager, additionalSources ...source.Source) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		WithOptions(controller.Options{MaxConcurrentReconciles: int(r.MaxConcurrentReconciles)}).
+func (r *RootPolicyStatusReconciler) SetupWithManager(
+	mgr ctrl.Manager,
+	maxConcurrentReconciles uint16,
+	plrsEnabled bool,
+) error {
+	ctrlBldr := ctrl.NewControllerManagedBy(mgr).
+		WithOptions(controller.Options{MaxConcurrentReconciles: int(maxConcurrentReconciles)}).
 		Named(ControllerName).
 		For(
 			&policiesv1.Policy{},
 			builder.WithPredicates(common.NeverEnqueue),
 		).
+		Watches(
+			&policiesv1.PlacementBinding{},
+			handler.EnqueueRequestsFromMapFunc(mapBindingToPolicies(mgr.GetClient())),
+		).
+		Watches(
+			&clusterv1beta1.PlacementDecision{},
+			handler.EnqueueRequestsFromMapFunc(mapDecisionToPolicies(mgr.GetClient())),
+		).
 		// This is a workaround - the controller-runtime requires a "For", but does not allow it to
 		// modify the eventhandler. Currently we need to enqueue requests for Policies in a very
 		// particular way, so we will define that in a separate "Watches"
 		Watches(
-			&source.Kind{Type: &policiesv1.Policy{}},
-			handler.EnqueueRequestsFromMapFunc(common.PolicyMapper(mgr.GetClient())),
+			&policiesv1.Policy{},
+			handler.EnqueueRequestsFromMapFunc(common.MapToRootPolicy(mgr.GetClient())),
 			builder.WithPredicates(policyStatusPredicate()),
-		).
-		Complete(r)
+		)
+
+	if plrsEnabled {
+		ctrlBldr = ctrlBldr.Watches(&appsv1.PlacementRule{},
+			handler.EnqueueRequestsFromMapFunc(mapRuleToPolicies(mgr.GetClient())))
+	}
+
+	return ctrlBldr.Complete(r)
 }
 
 // blank assignment to verify that RootPolicyStatusReconciler implements reconcile.Reconciler
@@ -55,7 +73,6 @@ var _ reconcile.Reconciler = &RootPolicyStatusReconciler{}
 // RootPolicyStatusReconciler handles replicated policy status updates and updates the root policy status.
 type RootPolicyStatusReconciler struct {
 	client.Client
-	MaxConcurrentReconciles uint
 	// Use a shared lock with the main policy controller to avoid conflicting updates.
 	RootPolicyLocks *sync.Map
 	Scheme          *runtime.Scheme
@@ -74,13 +91,13 @@ func (r *RootPolicyStatusReconciler) Reconcile(ctx context.Context, request ctrl
 	lock, _ := r.RootPolicyLocks.LoadOrStore(request.NamespacedName, &sync.Mutex{})
 
 	lock.(*sync.Mutex).Lock()
-	defer func() { lock.(*sync.Mutex).Unlock() }()
+	defer lock.(*sync.Mutex).Unlock()
 
 	rootPolicy := &policiesv1.Policy{}
 
 	err := r.Get(ctx, types.NamespacedName{Namespace: request.Namespace, Name: request.Name}, rootPolicy)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			log.V(2).Info("The root policy has been deleted. Doing nothing.")
 
 			return reconcile.Result{}, nil
@@ -91,50 +108,13 @@ func (r *RootPolicyStatusReconciler) Reconcile(ctx context.Context, request ctrl
 		return reconcile.Result{}, err
 	}
 
-	log.Info("Updating the root policy status")
-
-	replicatedPolicyList := &policiesv1.PolicyList{}
-
-	err = r.List(context.TODO(), replicatedPolicyList, client.MatchingLabels(common.LabelsForRootPolicy(rootPolicy)))
-	if err != nil {
-		log.Error(err, "Failed to list the replicated policies")
-
-		return reconcile.Result{}, err
-	}
-
-	clusterToReplicatedPolicy := make(map[string]*policiesv1.Policy, len(replicatedPolicyList.Items))
-
-	for i := range replicatedPolicyList.Items {
-		// Use the index to avoid making copies of each replicated policy
-		clusterToReplicatedPolicy[replicatedPolicyList.Items[i].Namespace] = &replicatedPolicyList.Items[i]
-	}
-
-	updatedStatus := false
-
-	for _, status := range rootPolicy.Status.Status {
-		replicatedPolicy := clusterToReplicatedPolicy[status.ClusterNamespace]
-		if replicatedPolicy == nil {
-			continue
-		}
-
-		if status.ComplianceState != replicatedPolicy.Status.ComplianceState {
-			updatedStatus = true
-			status.ComplianceState = replicatedPolicy.Status.ComplianceState
-		}
-	}
-
-	if !updatedStatus {
-		log.V(1).Info("No status changes required in the root policy. Doing nothing.")
-
+	// Replicated policies don't need to update status here
+	if _, ok := rootPolicy.Labels["policy.open-cluster-management.io/root-policy"]; ok {
 		return reconcile.Result{}, nil
 	}
 
-	rootPolicy.Status.ComplianceState = propagator.CalculateRootCompliance(rootPolicy.Status.Status)
-
-	err = r.Status().Update(context.TODO(), rootPolicy, &client.UpdateOptions{})
+	_, err = common.RootStatusUpdate(ctx, r.Client, rootPolicy)
 	if err != nil {
-		log.Error(err, "Failed to update the root policy status. Will Requeue.")
-
 		return reconcile.Result{}, err
 	}
 

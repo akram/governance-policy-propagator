@@ -2,16 +2,22 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  labels:
+    webhook-origin: governance-policy-propagator
   name: governance-policy-propagator
 spec:
   replicas: 1
   selector:
     matchLabels:
       name: governance-policy-propagator
+      webhook-origin: governance-policy-propagator
   template:
     metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: governance-policy-propagator
       labels:
         name: governance-policy-propagator
+        webhook-origin: governance-policy-propagator
     spec:
       serviceAccountName: governance-policy-propagator
       containers:
@@ -27,7 +33,14 @@ spec:
             - containerPort: 8383
               protocol: TCP
               name: http
+            - containerPort: 9443
+              protocol: TCP
+              name: webhook-http
           imagePullPolicy: Always
+          volumeMounts:
+          - mountPath: /tmp/k8s-webhook-server/serving-certs
+            name: cert
+            readOnly: true
           env:
             - name: WATCH_NAMESPACE
               value: ""
@@ -37,35 +50,8 @@ spec:
                   fieldPath: metadata.name
             - name: OPERATOR_NAME
               value: "governance-policy-propagator"
----
-kind: ClusterRoleBinding
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: governance-policy-propagator-global
-subjects:
-- kind: ServiceAccount
-  name: governance-policy-propagator
-  namespace: open-cluster-management
-roleRef:
-  kind: ClusterRole
-  name: governance-policy-propagator
-  apiGroup: rbac.authorization.k8s.io
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: governance-policy-propagator-leader-election-rolebinding
-subjects:
-- kind: ServiceAccount
-  name: governance-policy-propagator
-  namespace: open-cluster-management
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: governance-policy-propagator-leader-election-role
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: governance-policy-propagator
-  namespace: open-cluster-management
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: propagator-webhook-server-cert

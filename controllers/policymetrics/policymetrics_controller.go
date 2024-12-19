@@ -24,11 +24,11 @@ const ControllerName string = "policy-metrics"
 var log = ctrl.Log.WithName(ControllerName)
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *MetricReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *MetricReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles uint16) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		// The work queue prevents the same item being reconciled concurrently:
 		// https://github.com/kubernetes-sigs/controller-runtime/issues/1416#issuecomment-899833144
-		WithOptions(controller.Options{MaxConcurrentReconciles: int(r.MaxConcurrentReconciles)}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: int(maxConcurrentReconciles)}).
 		Named(ControllerName).
 		For(&policiesv1.Policy{}).
 		Complete(r)
@@ -40,8 +40,7 @@ var _ reconcile.Reconciler = &MetricReconciler{}
 // MetricReconciler reconciles the metrics for the Policy
 type MetricReconciler struct {
 	client.Client
-	MaxConcurrentReconciles uint
-	Scheme                  *runtime.Scheme
+	Scheme *runtime.Scheme
 }
 
 //+kubebuilder:rbac:groups=policy.open-cluster-management.io,resources=policies,verbs=get;list;watch;create;update;patch;delete
@@ -56,7 +55,7 @@ func (r *MetricReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 
 	// Need to know if the policy is a root policy to create the correct prometheus labels
 	// Can't try to use a label on the policy, because the policy might have been deleted.
-	inClusterNs, err := common.IsInClusterNamespace(r.Client, request.Namespace)
+	inClusterNs, err := common.IsInClusterNamespace(ctx, r.Client, request.Namespace)
 	if err != nil {
 		log.Error(err, "Failed to determine if the policy is a replicated policy")
 
@@ -131,6 +130,8 @@ func (r *MetricReconciler) Reconcile(ctx context.Context, request ctrl.Request) 
 		statusMetric.Set(0)
 	} else if pol.Status.ComplianceState == policiesv1.NonCompliant {
 		statusMetric.Set(1)
+	} else {
+		statusMetric.Set(-1)
 	}
 
 	return reconcile.Result{}, nil

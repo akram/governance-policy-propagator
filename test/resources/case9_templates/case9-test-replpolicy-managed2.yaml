@@ -2,6 +2,8 @@ apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
   name: case9-test-policy
+  labels:
+    team: panthers
 spec:
   remediationAction: inform
   disabled: false
@@ -36,3 +38,9 @@ spec:
                     Do.
                     Or do not.
                     There is no try.
+                  label-vendor-test: |
+                    auto-detect
+                  label-vendor-test-two: |
+                    auto-detect
+                  root-policy-label: panthers
+                  root-policy-namespace: policy-propagator-test

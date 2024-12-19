@@ -14,17 +14,18 @@ import (
 	"open-cluster-management.io/governance-policy-propagator/test/utils"
 )
 
-const (
-	case8PolicyName string = "case8-test-policy"
-	case8PolicyYaml string = "../resources/case8_metrics/case8-test-policy.yaml"
-)
-
 var _ = Describe("Test metrics appear locally", func() {
+	const (
+		case8PolicyName string = "case8-test-policy"
+		case8PolicyYaml string = "../resources/case8_metrics/case8-test-policy.yaml"
+	)
+
 	It("should report 0 for compliant root policy and replicated policies", func() {
 		By("Creating " + case8PolicyYaml)
 		utils.Kubectl("apply",
 			"-f", case8PolicyYaml,
-			"-n", testNamespace)
+			"-n", testNamespace,
+			"--kubeconfig="+kubeconfigHub)
 		plc := utils.GetWithTimeout(
 			clientHubDynamic, gvrPolicy, case8PolicyName, testNamespace, true, defaultTimeoutSeconds,
 		)
@@ -37,7 +38,7 @@ var _ = Describe("Test metrics appear locally", func() {
 		_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 			context.TODO(), plr, metav1.UpdateOptions{},
 		)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 		plc = utils.GetWithTimeout(
 			clientHubDynamic, gvrPolicy, testNamespace+"."+case8PolicyName, "managed2", true, defaultTimeoutSeconds,
 		)
@@ -52,7 +53,7 @@ var _ = Describe("Test metrics appear locally", func() {
 			_, err = clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 				context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		}
 		By("Checking the status of root policy")
 		yamlPlc := utils.ParseYaml("../resources/case8_metrics/managed-both-status-compliant.yaml")
@@ -91,7 +92,7 @@ var _ = Describe("Test metrics appear locally", func() {
 			_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 				context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		}
 		By("Checking the status of root policy")
 		yamlPlc := utils.ParseYaml("../resources/case8_metrics/managed-both-status-noncompliant.yaml")
@@ -123,7 +124,8 @@ var _ = Describe("Test metrics appear locally", func() {
 		By("Deleting the policy")
 		utils.Kubectl("delete",
 			"-f", case8PolicyYaml,
-			"-n", testNamespace)
+			"-n", testNamespace,
+			"--kubeconfig="+kubeconfigHub)
 		opt := metav1.ListOptions{}
 		utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 0, false, 10)
 		By("Checking metric endpoint for root policy status")

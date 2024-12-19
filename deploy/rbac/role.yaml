@@ -1,11 +1,39 @@
-
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: governance-policy-propagator
 rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resourceNames:
+  - policy-encryption-key
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - serviceaccounts/token
+  verbs:
+  - create
 - apiGroups:
   - '*'
   resources:
@@ -22,6 +50,12 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
 - apiGroups:
   - cluster.open-cluster-management.io
   resources:
@@ -41,113 +75,11 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resourceNames:
-  - policy-encryption-key
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
   - policy.open-cluster-management.io
   resources:
   - placementbindings
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
   - policies
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policies/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policies/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
   - policyautomations
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policyautomations/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policyautomations/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
   - policysets
   verbs:
   - create
@@ -160,12 +92,16 @@ rules:
 - apiGroups:
   - policy.open-cluster-management.io
   resources:
+  - policies/finalizers
+  - policyautomations/finalizers
   - policysets/finalizers
   verbs:
   - update
 - apiGroups:
   - policy.open-cluster-management.io
   resources:
+  - policies/status
+  - policyautomations/status
   - policysets/status
   verbs:
   - get

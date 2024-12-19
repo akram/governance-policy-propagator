@@ -19,14 +19,43 @@ var _ = Describe("Test policy status aggregation", func() {
 	const (
 		case2PolicyName string = "case2-test-policy"
 		case2PolicyYaml string = "../resources/case2_aggregation/case2-test-policy.yaml"
+		faultyPBName    string = "case2-faulty-placementbinding"
+		faultyPBYaml    string = "../resources/case2_aggregation/faulty-placementbinding.yaml"
 	)
 
-	Describe("Root status from different placements", func() {
+	Describe("Root status from different placements", Ordered, func() {
+		AfterAll(func() {
+			utils.Kubectl("delete",
+				"-f", faultyPBYaml,
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
+			utils.Kubectl("delete",
+				"-f", case2PolicyYaml,
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
+			opt := metav1.ListOptions{}
+			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 0, false, 10)
+		})
+
+		It("should create the faulty PlacementBinding in user ns", func() {
+			By("Creating " + faultyPBName)
+			utils.Kubectl("apply",
+				"-f", faultyPBYaml,
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
+			pb := utils.GetWithTimeout(
+				clientHubDynamic, gvrPlacementBinding, faultyPBName, testNamespace, true, defaultTimeoutSeconds,
+			)
+			Expect(pb).NotTo(BeNil())
+		})
 		It("should be created in user ns", func() {
 			By("Creating " + case2PolicyYaml)
 			utils.Kubectl("apply",
 				"-f", case2PolicyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case2PolicyName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -42,7 +71,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case2PolicyName, "managed1", true, defaultTimeoutSeconds,
 			)
@@ -70,7 +99,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case2PolicyName, "managed2", true, defaultTimeoutSeconds,
 			)
@@ -98,7 +127,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case2PolicyName, "managed2", true, defaultTimeoutSeconds,
 			)
@@ -121,7 +150,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			By("Creating pb-plr-2 to binding second set of placement")
 			utils.Kubectl("apply",
 				"-f", "../resources/case2_aggregation/pb-plr-2.yaml",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-both-placement-single-status.yaml")
 			Eventually(func() interface{} {
@@ -141,7 +170,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-both-placement-status.yaml")
 			Eventually(func() interface{} {
@@ -161,7 +190,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-both-placement-status.yaml")
 			Eventually(func() interface{} {
@@ -176,7 +205,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			By("Remove" + case2PolicyName + "-plr")
 			utils.Kubectl("delete",
 				"placementrule", case2PolicyName+"-plr",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-both-placement-status-missing-plr.yaml")
 			Eventually(func() interface{} {
@@ -191,7 +220,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			By("Remove" + case2PolicyName + "-plr2")
 			utils.Kubectl("delete",
 				"placementrule", case2PolicyName+"-plr2",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-both-placementbinding.yaml")
 			Eventually(func() interface{} {
@@ -206,10 +235,10 @@ var _ = Describe("Test policy status aggregation", func() {
 			By("Remove" + case2PolicyName + "-pb and " + case2PolicyName + "-pb2")
 			utils.Kubectl("delete",
 				"placementbinding", case2PolicyName+"-pb",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"placementbinding", case2PolicyName+"-pb2",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			By("Checking the status of root policy")
 			emptyStatus := map[string]interface{}{}
 			Eventually(func() interface{} {
@@ -219,13 +248,6 @@ var _ = Describe("Test policy status aggregation", func() {
 
 				return rootPlc.Object["status"]
 			}, defaultTimeoutSeconds, 1).Should(utils.SemanticEqual(emptyStatus))
-		})
-		It("should clean up", func() {
-			utils.Kubectl("delete",
-				"-f", case2PolicyYaml,
-				"-n", testNamespace)
-			opt := metav1.ListOptions{}
-			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 0, false, 10)
 		})
 	})
 	Describe("Root compliance from managed statuses", Ordered, func() {
@@ -240,7 +262,8 @@ var _ = Describe("Test policy status aggregation", func() {
 			By("Creating " + case2PolicyYaml)
 			utils.Kubectl("apply",
 				"-f", case2PolicyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case2PolicyName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -254,7 +277,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc = utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case2PolicyName, "managed2", true, defaultTimeoutSeconds,
 			)
@@ -264,7 +287,15 @@ var _ = Describe("Test policy status aggregation", func() {
 
 		AfterAll(func() {
 			By("Cleaning up")
-			utils.Kubectl("delete", "-f", case2PolicyYaml, "-n", testNamespace)
+			utils.Kubectl(
+				"delete",
+				"-f",
+				case2PolicyYaml,
+				"-n",
+				testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub,
+			)
 			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, metav1.ListOptions{}, 0, false, 10)
 		})
 
@@ -279,7 +310,7 @@ var _ = Describe("Test policy status aggregation", func() {
 				_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 					context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 				)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			}
 
 			By("Checking the status of root policy")
@@ -308,7 +339,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 				context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-one-status-noncompliant.yaml")
@@ -336,7 +367,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 				context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-mixed-pending-noncompliant.yaml")
@@ -364,7 +395,7 @@ var _ = Describe("Test policy status aggregation", func() {
 			_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 				context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			By("Checking the status of root policy")
 			yamlPlc := utils.ParseYaml("../resources/case2_aggregation/managed-mixed-pending-compliant.yaml")

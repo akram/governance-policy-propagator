@@ -15,22 +15,23 @@ import (
 	"open-cluster-management.io/governance-policy-propagator/test/utils"
 )
 
-const (
-	case7PolicyName   string = "case7-test-policy"
-	case7PolicyYaml   string = "../resources/case7_placement_bindings/case7-test-policy.yaml"
-	case7BindingYaml1 string = "../resources/case7_placement_bindings/case7-test-binding1.yaml"
-	case7BindingYaml2 string = "../resources/case7_placement_bindings/case7-test-binding2.yaml"
-	case7BindingYaml3 string = "../resources/case7_placement_bindings/case7-test-binding3.yaml"
-	case7BindingYaml4 string = "../resources/case7_placement_bindings/case7-test-binding4.yaml"
-)
-
 var _ = Describe("Test policy propagation", func() {
-	Describe("Create policy/pb/plc in ns:"+testNamespace, func() {
-		It("should be created in user ns", func() {
+	const (
+		case7PolicyName   string = "case7-test-policy"
+		case7PolicyYaml   string = "../resources/case7_placement_bindings/case7-test-policy.yaml"
+		case7BindingYaml1 string = "../resources/case7_placement_bindings/case7-test-binding1.yaml"
+		case7BindingYaml2 string = "../resources/case7_placement_bindings/case7-test-binding2.yaml"
+		case7BindingYaml3 string = "../resources/case7_placement_bindings/case7-test-binding3.yaml"
+		case7BindingYaml4 string = "../resources/case7_placement_bindings/case7-test-binding4.yaml"
+	)
+
+	Describe("Create policy/pb/plc in ns:"+testNamespace, Ordered, func() {
+		BeforeAll(func() {
 			By("Creating " + case7PolicyYaml)
 			utils.Kubectl("apply",
 				"-f", case7PolicyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case7PolicyName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -38,7 +39,8 @@ var _ = Describe("Test policy propagation", func() {
 			By("Creating " + case7BindingYaml1)
 			utils.Kubectl("apply",
 				"-f", case7BindingYaml1,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			binding := utils.GetWithTimeout(
 				clientHubDynamic,
 				gvrPlacementBinding,
@@ -51,7 +53,8 @@ var _ = Describe("Test policy propagation", func() {
 			By("Creating " + case7BindingYaml2)
 			utils.Kubectl("apply",
 				"-f", case7BindingYaml2,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			binding = utils.GetWithTimeout(
 				clientHubDynamic,
 				gvrPlacementBinding,
@@ -64,7 +67,8 @@ var _ = Describe("Test policy propagation", func() {
 			By("Creating " + case7BindingYaml3)
 			utils.Kubectl("apply",
 				"-f", case7BindingYaml3,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			binding = utils.GetWithTimeout(
 				clientHubDynamic,
 				gvrPlacementBinding,
@@ -77,7 +81,8 @@ var _ = Describe("Test policy propagation", func() {
 			By("Creating " + case7BindingYaml4)
 			utils.Kubectl("apply",
 				"-f", case7BindingYaml4,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			binding = utils.GetWithTimeout(
 				clientHubDynamic,
 				gvrPlacementBinding,
@@ -102,7 +107,7 @@ var _ = Describe("Test policy propagation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementDecision).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case7PolicyName, "managed1", true, defaultTimeoutSeconds,
 			)
@@ -126,7 +131,7 @@ var _ = Describe("Test policy propagation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementDecision).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case7PolicyName, "managed2", true, defaultTimeoutSeconds,
 			)
@@ -154,7 +159,7 @@ var _ = Describe("Test policy propagation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementBinding).Namespace(testNamespace).Update(
 				context.TODO(), pb, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			opt := metav1.ListOptions{
 				LabelSelector: common.RootPolicyLabel + "=" + testNamespace + "." + case7PolicyName,
 			}
@@ -169,7 +174,7 @@ var _ = Describe("Test policy propagation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			opt := metav1.ListOptions{
 				LabelSelector: common.RootPolicyLabel + "=" + testNamespace + "." + case7PolicyName,
 			}
@@ -193,7 +198,7 @@ var _ = Describe("Test policy propagation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementBinding).Namespace(testNamespace).Update(
 				context.TODO(), pb, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			opt := metav1.ListOptions{
 				LabelSelector: common.RootPolicyLabel + "=" + testNamespace + "." + case7PolicyName,
 			}
@@ -208,32 +213,41 @@ var _ = Describe("Test policy propagation", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			opt := metav1.ListOptions{
 				LabelSelector: common.RootPolicyLabel + "=" + testNamespace + "." + case7PolicyName,
 			}
 			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 2, true, defaultTimeoutSeconds)
 		})
-		It("should clean up policy", func() {
+		AfterAll(func() {
+			By("Clean up")
 			utils.Kubectl("delete",
 				"-f", case7PolicyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
 			opt := metav1.ListOptions{}
 			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 0, false, 10)
-		})
-		It("should clean up bindings", func() {
 			utils.Kubectl("delete",
 				"-f", case7BindingYaml1,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case7BindingYaml2,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case7BindingYaml3,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case7BindingYaml4,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--ignore-not-found",
+				"--kubeconfig="+kubeconfigHub)
 		})
 	})
 })

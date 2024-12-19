@@ -35,17 +35,14 @@ const (
 var (
 	log                       = ctrl.Log.WithName(ControllerName)
 	errLastRotationParseError = fmt.Errorf(`failed to parse the "%s" annotation`, propagator.LastRotatedAnnotation)
-	// The number of retries when performing an operation that can fail temporarily and can't be
-	// requeued for a retry later. This is not a const so it can be overwritten during the tests.
-	retries uint = 4
 )
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *EncryptionKeysReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *EncryptionKeysReconciler) SetupWithManager(mgr ctrl.Manager, maxConcurrentReconciles uint16) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		// The work queue prevents the same item being reconciled concurrently:
 		// https://github.com/kubernetes-sigs/controller-runtime/issues/1416#issuecomment-899833144
-		WithOptions(controller.Options{MaxConcurrentReconciles: int(r.MaxConcurrentReconciles)}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: int(maxConcurrentReconciles)}).
 		Named(ControllerName).
 		For(&corev1.Secret{}).
 		Complete(r)
@@ -56,11 +53,10 @@ var _ reconcile.Reconciler = &EncryptionKeysReconciler{}
 
 // EncryptionKeysReconciler is responsible for rotating the AES encryption key in the "policy-encryption-key" Secrets
 // for all managed clusters.
-type EncryptionKeysReconciler struct { // nolint:golint,revive
+type EncryptionKeysReconciler struct { //nolint:golint,revive
 	client.Client
-	KeyRotationDays         uint
-	MaxConcurrentReconciles uint
-	Scheme                  *runtime.Scheme
+	KeyRotationDays uint32
+	Scheme          *runtime.Scheme
 }
 
 //+kubebuilder:rbac:groups=policy.open-cluster-management.io,resources=policies,verbs=get;list;patch
@@ -192,7 +188,7 @@ func (r *EncryptionKeysReconciler) getNextRotationFromNow(secret *corev1.Secret)
 
 	lastRotated, err := time.Parse(time.RFC3339, lastRotatedTS)
 	if err != nil {
-		return 0, fmt.Errorf(`%w with value "%s": %v`, errLastRotationParseError, lastRotatedTS, err)
+		return 0, fmt.Errorf(`%w with value "%s": %w`, errLastRotationParseError, lastRotatedTS, err)
 	}
 
 	nextRotation := lastRotated.Add(time.Hour * 24 * time.Duration(r.KeyRotationDays))

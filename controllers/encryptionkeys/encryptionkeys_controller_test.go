@@ -44,7 +44,9 @@ type erroringFakeClient struct {
 	UpdateError bool
 }
 
-func (c *erroringFakeClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object) error {
+func (c *erroringFakeClient) Get(
+	ctx context.Context, key client.ObjectKey, obj client.Object, _ ...client.GetOption,
+) error {
 	if c.GetError {
 		return errors.New("some get error")
 	}
@@ -81,7 +83,7 @@ func (c *erroringFakeClient) Update(ctx context.Context, obj client.Object, opts
 func generateSecret() *corev1.Secret {
 	key := make([]byte, keySize/8)
 	_, err := rand.Read(key)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	encryptionSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -93,7 +95,7 @@ func generateSecret() *corev1.Secret {
 
 	prevKey := make([]byte, keySize/8)
 	_, err = rand.Read(prevKey)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	encryptionSecret.Data["previousKey"] = prevKey
 
@@ -190,9 +192,9 @@ func getReconciler(encryptionSecret *corev1.Secret) *EncryptionKeysReconciler {
 
 	scheme := k8sruntime.NewScheme()
 	err := clientgoscheme.AddToScheme(scheme)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	err = v1.AddToScheme(scheme)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	builder := fake.NewClientBuilder().WithObjects(policies...).WithScheme(scheme)
 
@@ -203,17 +205,16 @@ func getReconciler(encryptionSecret *corev1.Secret) *EncryptionKeysReconciler {
 	client := builder.Build()
 
 	return &EncryptionKeysReconciler{
-		Client:                  client,
-		KeyRotationDays:         30,
-		MaxConcurrentReconciles: 1,
-		Scheme:                  scheme,
+		Client:          client,
+		KeyRotationDays: 30,
+		Scheme:          scheme,
 	}
 }
 
 func assertTriggerUpdate(r *EncryptionKeysReconciler) {
 	policyList := v1.PolicyList{}
 	err := r.List(context.TODO(), &policyList)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	for _, policy := range policyList.Items {
 		annotation := policy.Annotations[propagator.TriggerUpdateAnnotation]
@@ -230,7 +231,7 @@ func assertTriggerUpdate(r *EncryptionKeysReconciler) {
 func assertNoTriggerUpdate(r *EncryptionKeysReconciler) {
 	policyList := v1.PolicyList{}
 	err := r.List(context.TODO(), &policyList)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	for _, policy := range policyList.Items {
 		annotation := policy.Annotations[propagator.TriggerUpdateAnnotation]
@@ -267,12 +268,12 @@ func TestReconcileRotateKey(t *testing.T) {
 				request := ctrl.Request{NamespacedName: secretID}
 				result, err := r.Reconcile(context.TODO(), request)
 
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(result.Requeue).To(BeFalse())
 				Expect(getRequeueAfterDays(result)).To(Equal(30))
 
 				err = r.Get(context.TODO(), secretID, encryptionSecret)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 				Expect(bytes.Equal(encryptionSecret.Data["key"], originalKey)).To(BeFalse())
 				Expect(bytes.Equal(encryptionSecret.Data["previousKey"], originalKey)).To(BeTrue())
 
@@ -301,11 +302,11 @@ func TestReconcileNoRotation(t *testing.T) {
 	request := ctrl.Request{NamespacedName: secretID}
 	result, err := r.Reconcile(context.TODO(), request)
 
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(getRequeueAfterDays(result)).To(Equal(30))
 
 	err = r.Get(context.TODO(), secretID, encryptionSecret)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(bytes.Equal(encryptionSecret.Data["key"], originalKey)).To(BeTrue())
 	Expect(bytes.Equal(encryptionSecret.Data["previousKey"], originalKey)).To(BeFalse())
 
@@ -324,12 +325,12 @@ func TestReconcileNotFound(t *testing.T) {
 	request := ctrl.Request{NamespacedName: secretID}
 	result, err := r.Reconcile(context.TODO(), request)
 
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 
 	policyList := v1.PolicyList{}
 	err = r.List(context.TODO(), &policyList)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	for _, policy := range policyList.Items {
 		annotation := policy.Annotations[propagator.TriggerUpdateAnnotation]
@@ -358,12 +359,12 @@ func TestReconcileManualRotation(t *testing.T) {
 	request := ctrl.Request{NamespacedName: secretID}
 	result, err := r.Reconcile(context.TODO(), request)
 
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(result.Requeue).To(BeFalse())
 	Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 
 	err = r.Get(context.TODO(), secretID, encryptionSecret)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(bytes.Equal(encryptionSecret.Data["key"], originalKey)).To(BeTrue())
 	Expect(bytes.Equal(encryptionSecret.Data["previousKey"], originalPrevKey)).To(BeTrue())
 
@@ -390,14 +391,14 @@ func TestReconcileInvalidKey(t *testing.T) {
 	request := ctrl.Request{NamespacedName: secretID}
 	result, err := r.Reconcile(context.TODO(), request)
 
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(result.Requeue).To(BeFalse())
 	Expect(getRequeueAfterDays(result)).To(Equal(30))
 
 	err = r.Get(context.TODO(), secretID, encryptionSecret)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(bytes.Equal(encryptionSecret.Data["key"], originalKey)).To(BeFalse())
-	Expect(len(encryptionSecret.Data["previousKey"])).To(Equal(0))
+	Expect(encryptionSecret.Data["previousKey"]).To(BeEmpty())
 
 	assertTriggerUpdate(r)
 }
@@ -422,14 +423,14 @@ func TestReconcileInvalidPreviousKey(t *testing.T) {
 	request := ctrl.Request{NamespacedName: secretID}
 	result, err := r.Reconcile(context.TODO(), request)
 
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(result.Requeue).To(BeFalse())
 	Expect(getRequeueAfterDays(result)).To(Equal(30))
 
 	err = r.Get(context.TODO(), secretID, encryptionSecret)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(bytes.Equal(encryptionSecret.Data["key"], originalKey)).To(BeTrue())
-	Expect(len(encryptionSecret.Data["previousKey"])).To(Equal(0))
+	Expect(encryptionSecret.Data["previousKey"]).To(BeEmpty())
 
 	assertNoTriggerUpdate(r)
 }
@@ -451,7 +452,7 @@ func TestReconcileSecretNotFiltered(t *testing.T) {
 	request := ctrl.Request{NamespacedName: secretID}
 	result, err := r.Reconcile(context.TODO(), request)
 
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 	Expect(result.Requeue).To(BeFalse())
 	Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
 
@@ -461,11 +462,6 @@ func TestReconcileSecretNotFiltered(t *testing.T) {
 func TestReconcileAPIFails(t *testing.T) {
 	t.Parallel()
 	RegisterFailHandler(Fail)
-
-	originalRetries := retries
-	retries = 0
-
-	t.Cleanup(func() { retries = originalRetries })
 
 	tests := []struct {
 		ExpectedRotation bool
@@ -504,10 +500,10 @@ func TestReconcileAPIFails(t *testing.T) {
 				result, err := r.Reconcile(context.TODO(), request)
 
 				if !test.ExpectedRotation {
-					Expect(err).ShouldNot(BeNil())
+					Expect(err).Should(HaveOccurred())
 					Expect(result.RequeueAfter).Should(Equal(time.Duration(0)))
 				} else {
-					Expect(err).Should(BeNil())
+					Expect(err).ShouldNot(HaveOccurred())
 					Expect(result.RequeueAfter).ShouldNot(Equal(time.Duration(0)))
 				}
 
@@ -517,7 +513,7 @@ func TestReconcileAPIFails(t *testing.T) {
 				r.Client = erroringClient.Client
 
 				err = r.Get(context.TODO(), client.ObjectKeyFromObject(encryptionSecret), encryptionSecret)
-				Expect(err).Should(BeNil())
+				Expect(err).ShouldNot(HaveOccurred())
 
 				if test.ExpectedRotation {
 					Expect(bytes.Equal(originalKey, encryptionSecret.Data["key"])).Should(BeFalse())

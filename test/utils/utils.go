@@ -4,21 +4,25 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ghodss/yaml"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/kubernetes"
 	clusterv1beta1 "open-cluster-management.io/api/cluster/v1beta1"
 	appsv1 "open-cluster-management.io/multicloud-operators-subscription/pkg/apis/apps/placementrule/v1"
 )
@@ -38,7 +42,7 @@ func GeneratePlrStatus(clusters ...string) *appsv1.PlacementRuleStatus {
 
 // GeneratePldStatus generate pld status with given clusters
 func GeneratePldStatus(
-	placementName string, placementNamespace string, clusters ...string,
+	_ string, _ string, clusters ...string,
 ) *clusterv1beta1.PlacementDecisionStatus {
 	plrDecision := []clusterv1beta1.ClusterDecision{}
 	for _, cluster := range clusters {
@@ -63,11 +67,11 @@ func Pause(s uint) {
 // ParseYaml read given yaml file and unmarshal it to &unstructured.Unstructured{}
 func ParseYaml(file string) *unstructured.Unstructured {
 	yamlFile, err := os.ReadFile(file)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	yamlPlc := &unstructured.Unstructured{}
 	err = yaml.Unmarshal(yamlFile, yamlPlc)
-	Expect(err).To(BeNil())
+	Expect(err).ToNot(HaveOccurred())
 
 	return yamlPlc
 }
@@ -81,13 +85,15 @@ func GetClusterLevelWithTimeout(
 	wantFound bool,
 	timeout int,
 ) *unstructured.Unstructured {
+	GinkgoHelper()
+
 	if timeout < 1 {
 		timeout = 1
 	}
 
 	var obj *unstructured.Unstructured
 
-	EventuallyWithOffset(1, func() error {
+	Eventually(func() error {
 		var err error
 		namespace := clientHubDynamic.Resource(gvr)
 
@@ -105,7 +111,7 @@ func GetClusterLevelWithTimeout(
 		}
 
 		return nil
-	}, timeout, 1).Should(BeNil())
+	}, timeout, 1).ShouldNot(HaveOccurred())
 
 	if wantFound {
 		return obj
@@ -123,13 +129,15 @@ func GetWithTimeout(
 	wantFound bool,
 	timeout int,
 ) *unstructured.Unstructured {
+	GinkgoHelper()
+
 	if timeout < 1 {
 		timeout = 1
 	}
 
 	var obj *unstructured.Unstructured
 
-	EventuallyWithOffset(1, func() error {
+	Eventually(func() error {
 		var err error
 		namespace := clientHubDynamic.Resource(gvr).Namespace(namespace)
 
@@ -147,7 +155,7 @@ func GetWithTimeout(
 		}
 
 		return nil
-	}, timeout, 1).Should(BeNil())
+	}, timeout, 1).ShouldNot(HaveOccurred())
 
 	if wantFound {
 		return obj
@@ -166,16 +174,17 @@ func ListWithTimeout(
 	wantFound bool,
 	timeout int,
 ) *unstructured.UnstructuredList {
+	GinkgoHelper()
+
 	if timeout < 1 {
 		timeout = 1
 	}
 
 	var list *unstructured.UnstructuredList
 
-	EventuallyWithOffset(1, func() error {
+	Eventually(func() error {
 		var err error
 		list, err = clientHubDynamic.Resource(gvr).List(context.TODO(), opts)
-
 		if err != nil {
 			return err
 		}
@@ -185,7 +194,7 @@ func ListWithTimeout(
 		}
 
 		return nil
-	}, timeout, 1).Should(BeNil())
+	}, timeout, 1).ShouldNot(HaveOccurred())
 
 	if wantFound {
 		return list
@@ -205,16 +214,17 @@ func ListWithTimeoutByNamespace(
 	wantFound bool,
 	timeout int,
 ) *unstructured.UnstructuredList {
+	GinkgoHelper()
+
 	if timeout < 1 {
 		timeout = 1
 	}
 
 	var list *unstructured.UnstructuredList
 
-	EventuallyWithOffset(1, func() error {
+	Eventually(func() error {
 		var err error
 		list, err = clientHubDynamic.Resource(gvr).Namespace(ns).List(context.TODO(), opts)
-
 		if err != nil {
 			return err
 		}
@@ -224,7 +234,7 @@ func ListWithTimeoutByNamespace(
 		}
 
 		return nil
-	}, timeout, 1).Should(BeNil())
+	}, timeout, 1).ShouldNot(HaveOccurred())
 
 	if wantFound {
 		return list
@@ -235,19 +245,39 @@ func ListWithTimeoutByNamespace(
 
 // Kubectl execute kubectl cli
 func Kubectl(args ...string) {
+	GinkgoHelper()
+
 	cmd := exec.Command("kubectl", args...)
+
+	var stderr bytes.Buffer
+
+	cmd.Stderr = &stderr
 
 	err := cmd.Start()
 	if err != nil {
 		Fail(fmt.Sprintf("Error: %v", err))
 	}
+
+	err = cmd.Wait()
+	if err != nil {
+		Fail(fmt.Sprintf("`kubctl %s` failed: %s", strings.Join(args, " "), stderr.String()))
+	}
 }
 
 // KubectlWithOutput execute kubectl cli and return output and error
 func KubectlWithOutput(args ...string) (string, error) {
-	output, err := exec.Command("kubectl", args...).CombinedOutput()
-	// nolint: forbidigo
-	fmt.Println(string(output))
+	kubectlCmd := exec.Command("kubectl", args...)
+
+	output, err := kubectlCmd.CombinedOutput()
+	if err != nil {
+		// Reformat error to include kubectl command and stderr output
+		err = fmt.Errorf(
+			"error running command '%s':\n %s: %s",
+			strings.Join(kubectlCmd.Args, " "),
+			output,
+			err.Error(),
+		)
+	}
 
 	return string(output), err
 }
@@ -297,4 +327,67 @@ func GetMetrics(metricPatterns ...string) []string {
 	}
 
 	return values
+}
+
+func GetMatchingEvents(
+	client kubernetes.Interface, namespace, objName, reasonRegex, msgRegex string, timeout int,
+) []corev1.Event {
+	GinkgoHelper()
+
+	var eventList *corev1.EventList
+
+	Eventually(func() error {
+		var err error
+		eventList, err = client.CoreV1().Events(namespace).List(context.TODO(), metav1.ListOptions{})
+
+		return err
+	}, timeout, 1).ShouldNot(HaveOccurred())
+
+	matchingEvents := make([]corev1.Event, 0)
+	msgMatcher := regexp.MustCompile(msgRegex)
+	reasonMatcher := regexp.MustCompile(reasonRegex)
+
+	for _, event := range eventList.Items {
+		if event.InvolvedObject.Name == objName && reasonMatcher.MatchString(event.Reason) &&
+			msgMatcher.MatchString(event.Message) {
+			matchingEvents = append(matchingEvents, event)
+		}
+	}
+
+	return matchingEvents
+}
+
+// MetricsLines execs into the propagator pod and curls the metrics endpoint, and returns lines
+// that match the pattern.
+func MetricsLines(pattern string) (string, error) {
+	propPodInfo, err := KubectlWithOutput("get", "pod", "-n=open-cluster-management",
+		"-l=name=governance-policy-propagator", "--no-headers")
+	if err != nil {
+		return "", err
+	}
+
+	var cmd *exec.Cmd
+
+	metricsCmd := fmt.Sprintf(`curl localhost:8383/metrics | grep %q`, pattern)
+
+	// The pod name is "No" when the response is "No resources found"
+	propPodName := strings.Split(propPodInfo, " ")[0]
+	if propPodName == "No" {
+		// A missing pod could mean the controller is running locally
+		cmd = exec.Command("bash", "-c", metricsCmd)
+	} else {
+		cmd = exec.Command("kubectl", "exec", "-n=open-cluster-management", propPodName, "-c",
+			"governance-policy-propagator", "--", "bash", "-c", metricsCmd)
+	}
+
+	matchingMetricsRaw, err := cmd.Output()
+	if err != nil {
+		if err.Error() == "exit status 1" {
+			return "", nil // exit 1 indicates that grep couldn't find a match.
+		}
+
+		return "", err
+	}
+
+	return string(matchingMetricsRaw), nil
 }

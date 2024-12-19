@@ -9,7 +9,6 @@ import (
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	appsv1 "open-cluster-management.io/multicloud-operators-subscription/pkg/apis/apps/placementrule/v1"
 
 	policiesv1 "open-cluster-management.io/governance-policy-propagator/api/v1"
 	policiesv1beta1 "open-cluster-management.io/governance-policy-propagator/api/v1beta1"
@@ -37,14 +36,21 @@ func equivalentReplicatedPolicies(plc1 *policiesv1.Policy, plc2 *policiesv1.Poli
 // buildReplicatedPolicy constructs a replicated policy based on a root policy and a placementDecision.
 // In particular, it adds labels that the policy framework uses, and ensures that policy dependencies
 // are in a consistent format suited for use on managed clusters.
-func (r *PolicyReconciler) buildReplicatedPolicy(
-	root *policiesv1.Policy, decision appsv1.PlacementDecision,
+// It can return an error if it needed to canonicalize a dependency, but a PolicySet lookup failed.
+func (r *ReplicatedPolicyReconciler) buildReplicatedPolicy(ctx context.Context,
+	root *policiesv1.Policy, clusterDec clusterDecision,
 ) (*policiesv1.Policy, error) {
+	clusterName := clusterDec.Cluster
 	replicatedName := common.FullNameForPolicy(root)
 
-	replicated := root.DeepCopy()
+	// Create the copy this way to avoid copying the root policy's status which can be quite large in large
+	// environments.
+	replicated := &policiesv1.Policy{}
+	replicated.TypeMeta = root.TypeMeta
+	root.ObjectMeta.DeepCopyInto(&replicated.ObjectMeta)
+	root.Spec.DeepCopyInto(&replicated.Spec)
 	replicated.SetName(replicatedName)
-	replicated.SetNamespace(decision.ClusterNamespace)
+	replicated.SetNamespace(clusterName)
 	replicated.SetResourceVersion("")
 	replicated.SetFinalizers(nil)
 	replicated.SetOwnerReferences(nil)
@@ -65,8 +71,8 @@ func (r *PolicyReconciler) buildReplicatedPolicy(
 	}
 
 	// Extra labels on replicated policies
-	labels[common.ClusterNameLabel] = decision.ClusterName
-	labels[common.ClusterNamespaceLabel] = decision.ClusterNamespace
+	labels[common.ClusterNameLabel] = clusterName
+	labels[common.ClusterNamespaceLabel] = clusterName
 	labels[common.RootPolicyLabel] = replicatedName
 
 	replicated.SetLabels(labels)
@@ -91,16 +97,24 @@ func (r *PolicyReconciler) buildReplicatedPolicy(
 
 	replicated.SetAnnotations(annotations)
 
+	// Override the replicated policy remediationAction when it's selected to be enforced
+	if !strings.EqualFold(string(replicated.Spec.RemediationAction), string(policiesv1.Enforce)) {
+		if clusterDec.PolicyOverrides.RemediationAction != "" {
+			replicated.Spec.RemediationAction = policiesv1.RemediationAction(
+				clusterDec.PolicyOverrides.RemediationAction)
+		}
+	}
+
 	var err error
 
-	replicated.Spec.Dependencies, err = r.canonicalizeDependencies(replicated.Spec.Dependencies, root.Namespace)
+	replicated.Spec.Dependencies, err = r.canonicalizeDependencies(ctx, replicated.Spec.Dependencies, root.Namespace)
 	if err != nil {
 		return replicated, err
 	}
 
 	for i, template := range replicated.Spec.PolicyTemplates {
 		replicated.Spec.PolicyTemplates[i].ExtraDependencies, err = r.canonicalizeDependencies(
-			template.ExtraDependencies, root.Namespace)
+			ctx, template.ExtraDependencies, root.Namespace)
 		if err != nil {
 			return replicated, err
 		}
@@ -126,8 +140,8 @@ func depIsPolicy(dep policiesv1.PolicyDependency) bool {
 // format as in replicated Policies), and that PolicySets are replaced with their constituent
 // Policies. If a PolicySet could not be found, that dependency will be copied as-is. It will
 // return an error if there is an unexpected error looking up a PolicySet to replace.
-func (r *PolicyReconciler) canonicalizeDependencies(
-	rawDeps []policiesv1.PolicyDependency, defaultNamespace string,
+func (r *Propagator) canonicalizeDependencies(
+	ctx context.Context, rawDeps []policiesv1.PolicyDependency, defaultNamespace string,
 ) ([]policiesv1.PolicyDependency, error) {
 	deps := make([]policiesv1.PolicyDependency, 0)
 
@@ -139,7 +153,7 @@ func (r *PolicyReconciler) canonicalizeDependencies(
 				dep.Namespace = defaultNamespace
 			}
 
-			err := r.Get(context.TODO(), types.NamespacedName{
+			err := r.Get(ctx, types.NamespacedName{
 				Namespace: dep.Namespace,
 				Name:      dep.Name,
 			}, plcset)
@@ -168,20 +182,21 @@ func (r *PolicyReconciler) canonicalizeDependencies(
 				})
 			}
 		} else if depIsPolicy(dep) {
-			split := strings.Split(dep.Name, ".")
-			if len(split) == 2 { // assume it's already in the correct <namespace>.<name> format
-				deps = append(deps, dep)
-			} else {
-				if dep.Namespace == "" {
-					// use the namespace from the dependent policy when otherwise not provided
-					dep.Namespace = defaultNamespace
+			if dep.Namespace == "" {
+				split := strings.Split(dep.Name, ".")
+				if len(split) >= 2 { // assume the name is already in the correct <namespace>.<name> format
+					deps = append(deps, dep)
+
+					continue
 				}
-
-				dep.Name = dep.Namespace + "." + dep.Name
-				dep.Namespace = ""
-
-				deps = append(deps, dep)
+				// use the namespace from the dependent policy when otherwise not provided
+				dep.Namespace = defaultNamespace
 			}
+
+			dep.Name = dep.Namespace + "." + dep.Name
+			dep.Namespace = ""
+
+			deps = append(deps, dep)
 		} else {
 			deps = append(deps, dep)
 		}

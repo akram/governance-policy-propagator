@@ -1,6 +1,7 @@
 package propagator
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -148,7 +149,7 @@ func TestCanonicalizeDependencies(t *testing.T) {
 		WithObjects(fooSet, barSet).
 		Build()
 
-	fakeReconciler := PolicyReconciler{Client: fakeClient}
+	fakeReconciler := Propagator{Client: fakeClient}
 
 	tests := map[string]struct {
 		input []policiesv1.PolicyDependency
@@ -184,10 +185,14 @@ func TestCanonicalizeDependencies(t *testing.T) {
 			input: []policiesv1.PolicyDependency{
 				depPol("red", "colors", "Compliant"),
 				depPol("blue", "colors", "NonCompliant"),
+				depPol("1.2", "colors", "NonCompliant"),
+				depPol("colors.1.2", "", "NonCompliant"),
 			},
 			want: []policiesv1.PolicyDependency{
 				depPol("colors.red", "", "Compliant"),
 				depPol("colors.blue", "", "NonCompliant"),
+				depPol("colors.1.2", "", "NonCompliant"),
+				depPol("colors.1.2", "", "NonCompliant"),
 			},
 		},
 		"policies without namespaces": {
@@ -218,13 +223,13 @@ func TestCanonicalizeDependencies(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			got, err := fakeReconciler.canonicalizeDependencies(test.input, "sentinel")
+			got, err := fakeReconciler.canonicalizeDependencies(context.TODO(), test.input, "sentinel")
 			if err != nil {
 				t.Fatal("Got unexpected error")
 			}
 
 			if !reflect.DeepEqual(test.want, got) {
-				t.Fatalf("expected: %v, got: %v", test.want, got)
+				t.Fatalf("%s\nexpected:\n%v\ngot:\n%v", name, test.want, got)
 			}
 		})
 	}

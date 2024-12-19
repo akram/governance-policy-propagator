@@ -1,4 +1,3 @@
-// Copyright (c) 2021 Red Hat, Inc.
 // Copyright Contributors to the Open Cluster Management project
 
 package propagator
@@ -10,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/stolostron/go-template-utils/v3/pkg/templates"
+	"github.com/stolostron/go-template-utils/v6/pkg/templates"
 	corev1 "k8s.io/api/core/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,8 +25,7 @@ const (
 
 // getEncryptionKey will get the encryption key for a managed cluster used for policy template encryption. If it doesn't
 // already exist as a secret on the Hub cluster, it will be generated.
-func (r *PolicyReconciler) getEncryptionKey(clusterName string) ([]byte, error) {
-	ctx := context.TODO()
+func (r *Propagator) getEncryptionKey(ctx context.Context, clusterName string) ([]byte, error) {
 	objectKey := types.NamespacedName{
 		Name:      EncryptionKeySecret,
 		Namespace: clusterName,
@@ -66,7 +64,14 @@ func (r *PolicyReconciler) getEncryptionKey(clusterName string) ([]byte, error) 
 		}
 
 		err = r.Create(ctx, encryptionSecret)
-		if err != nil {
+		if k8serrors.IsAlreadyExists(err) {
+			// Some kind of race condition occurred (e.g. cache not updated in time), so just refetch the encryption
+			// secret.
+			err := r.Get(ctx, objectKey, encryptionSecret)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get the Secret %s/%s: %w", clusterName, EncryptionKeySecret, err)
+			}
+		} else if err != nil {
 			return nil, fmt.Errorf("failed to create the Secret %s/%s: %w", clusterName, EncryptionKeySecret, err)
 		}
 	} else if err != nil {
@@ -90,7 +95,7 @@ func GenerateEncryptionKey() ([]byte, error) {
 // getInitializationVector retrieves the initialization vector from the annotation
 // "policy.open-cluster-management.io/encryption-iv" if the annotation exists or generates a new
 // initialization vector and adds it to the annotations object if it's missing.
-func (r *PolicyReconciler) getInitializationVector(
+func (r *Propagator) getInitializationVector(
 	policyName string, clusterName string, annotations map[string]string,
 ) ([]byte, error) {
 	log := log.WithValues("policy", policyName, "cluster", clusterName)

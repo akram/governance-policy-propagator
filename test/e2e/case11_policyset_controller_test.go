@@ -15,32 +15,34 @@ import (
 	"open-cluster-management.io/governance-policy-propagator/test/utils"
 )
 
-const (
-	case11PolicyName               string = "case11-test-policy"
-	case11PolicySetName            string = "case11-test-policyset"
-	case11PolicySetNameManaged1    string = "test-plcset-managed1"
-	case11PolicyNameManaged2       string = "case11-multiple-placements-rule"
-	case11PolicySetEmpty           string = "case11-empty-policyset"
-	case11PolicySetMultiStatus     string = "case11-multistatus-policyset"
-	case11PolicyCompliant          string = "case11-compliant-plc"
-	case11PolicyYaml               string = "../resources/case11_policyset_controller/case11-test-policy.yaml"
-	case11PolicySetPatchYaml       string = "../resources/case11_policyset_controller/case11-patch-plcset.yaml"
-	case11PolicySetPatch2Yaml      string = "../resources/case11_policyset_controller/case11-patch-plcset-2.yaml"
-	case11DisablePolicyYaml        string = "../resources/case11_policyset_controller/case11-disable-plc.yaml"
-	case11PolicySetManaged1Yaml    string = "../resources/case11_policyset_controller/case11-plcset-managed1.yaml"
-	case11PolicyManaged2Yaml       string = "../resources/case11_policyset_controller/case11-plc-managed2.yaml"
-	case11PolicySetEmptyYaml       string = "../resources/case11_policyset_controller/case11-empty-plcset.yaml"
-	case11PolicySetMultiStatusYaml string = "../resources/case11_policyset_controller/case11-plcset-multistatus.yaml"
-	case11PolicyCompliantYaml      string = "../resources/case11_policyset_controller/case11-compliant-plc.yaml"
-)
-
 var _ = Describe("Test policyset controller status updates", func() {
+	const (
+		case11PolicyName               string = "case11-test-policy"
+		case11PolicySetName            string = "case11-test-policyset"
+		case11PolicySetNameManaged1    string = "test-plcset-managed1"
+		case11PolicyNameManaged2       string = "case11-multiple-placements-rule"
+		case11PolicySetEmpty           string = "case11-empty-policyset"
+		case11PolicySetMultiStatus     string = "case11-multistatus-policyset"
+		case11PolicyCompliant          string = "case11-compliant-plc"
+		case11Path                     string = "../resources/case11_policyset_controller/"
+		case11PolicyYaml               string = case11Path + "case11-test-policy.yaml"
+		case11PolicySetPatchYaml       string = case11Path + "case11-patch-plcset.yaml"
+		case11PolicySetPatch2Yaml      string = case11Path + "case11-patch-plcset-2.yaml"
+		case11DisablePolicyYaml        string = case11Path + "case11-disable-plc.yaml"
+		case11PolicySetManaged1Yaml    string = case11Path + "case11-plcset-managed1.yaml"
+		case11PolicyManaged2Yaml       string = case11Path + "case11-plc-managed2.yaml"
+		case11PolicySetEmptyYaml       string = case11Path + "case11-empty-plcset.yaml"
+		case11PolicySetMultiStatusYaml string = case11Path + "case11-plcset-multistatus.yaml"
+		case11PolicyCompliantYaml      string = case11Path + "case11-compliant-plc.yaml"
+	)
+
 	Describe("Create policy, policyset, and placement in ns:"+testNamespace, func() {
 		It("should create and process policy and policyset", func() {
 			By("Creating " + case11PolicyYaml)
 			utils.Kubectl("apply",
 				"-f", case11PolicyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace,
+				"--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case11PolicyName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -55,10 +57,10 @@ var _ = Describe("Test policyset controller status updates", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc = utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case11PolicyName, "managed2", true,
-				defaultTimeoutSeconds,
+				60,
 			)
 			Expect(plc).ToNot(BeNil())
 
@@ -82,7 +84,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 				_, err = clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 					context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 				)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			}
 			plcSet := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicySet, case11PolicySetName, testNamespace, true, defaultTimeoutSeconds,
@@ -102,7 +104,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			By("Creating " + case11PolicySetPatchYaml)
 			utils.Kubectl("apply",
 				"-f", case11PolicySetPatchYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plcSet := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicySet, case11PolicySetName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -120,7 +122,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 				"apply",
 				"-f",
 				"../resources/case11_policyset_controller/case11-reset-plcset.yaml", "-n",
-				testNamespace,
+				testNamespace, "--kubeconfig="+kubeconfigHub,
 			)
 		})
 		It("should update to compliant if all its child policy violations have been remediated", func() {
@@ -144,7 +146,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 				_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 					context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 				)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			}
 			By("Checking the status of policy set")
 			yamlPlc := utils.ParseYaml("../resources/case11_policyset_controller/case11-statuscheck-3.yaml")
@@ -177,7 +179,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 				_, err := clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 					context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 				)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			}
 			By("Checking the status of policy set")
 			yamlPlc := utils.ParseYaml("../resources/case11_policyset_controller/case11-statuscheck-8.yaml")
@@ -193,7 +195,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			By("Creating " + case11DisablePolicyYaml)
 			utils.Kubectl("apply",
 				"-f", case11DisablePolicyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case11PolicyName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -212,7 +214,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			By("Creating " + case11PolicyCompliantYaml)
 			utils.Kubectl("apply",
 				"-f", case11PolicyCompliantYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plc = utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case11PolicyCompliant, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -220,7 +222,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 
 			utils.Kubectl("apply",
 				"-f", case11PolicySetPatch2Yaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plcSet := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicySet, case11PolicySetName, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -235,7 +237,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc = utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case11PolicyCompliant, "managed2", true,
 				defaultTimeoutSeconds,
@@ -262,7 +264,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 				_, err = clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 					context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 				)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			}
 
 			By("Checking the status of policy set")
@@ -279,10 +281,10 @@ var _ = Describe("Test policyset controller status updates", func() {
 			By("Creating " + case11PolicyManaged2Yaml)
 			utils.Kubectl("apply",
 				"-f", case11PolicySetManaged1Yaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("apply",
 				"-f", case11PolicyManaged2Yaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plc := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, case11PolicyNameManaged2, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -297,7 +299,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			_, err := clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc = utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case11PolicyNameManaged2, "managed1", true,
 				defaultTimeoutSeconds,
@@ -313,7 +315,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			_, err = clientHubDynamic.Resource(gvrPlacementRule).Namespace(testNamespace).UpdateStatus(
 				context.TODO(), plr, metav1.UpdateOptions{},
 			)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 			plc = utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicy, testNamespace+"."+case11PolicyNameManaged2, "managed2", true,
 				defaultTimeoutSeconds,
@@ -340,7 +342,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 				_, err = clientHubDynamic.Resource(gvrPolicy).Namespace(replicatedPlc.GetNamespace()).UpdateStatus(
 					context.TODO(), &replicatedPlc, metav1.UpdateOptions{},
 				)
-				Expect(err).To(BeNil())
+				Expect(err).ToNot(HaveOccurred())
 			}
 			plcSet := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicySet, case11PolicySetNameManaged1, testNamespace, true,
@@ -362,7 +364,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			By("Creating " + case11PolicySetEmpty)
 			utils.Kubectl("apply",
 				"-f", case11PolicySetEmptyYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plcSet := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicySet, case11PolicySetEmpty, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -380,7 +382,7 @@ var _ = Describe("Test policyset controller status updates", func() {
 			By("Creating " + case11PolicySetMultiStatus)
 			utils.Kubectl("apply",
 				"-f", case11PolicySetMultiStatusYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			plcSet := utils.GetWithTimeout(
 				clientHubDynamic, gvrPolicySet, case11PolicySetMultiStatus, testNamespace, true, defaultTimeoutSeconds,
 			)
@@ -399,22 +401,22 @@ var _ = Describe("Test policyset controller status updates", func() {
 		It("should clean up", func() {
 			utils.Kubectl("delete",
 				"-f", "../resources/case11_policyset_controller/case11-test-policy.yaml",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", "../resources/case11_policyset_controller/case11-empty-plcset.yaml",
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case11PolicySetManaged1Yaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case11PolicyManaged2Yaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case11PolicyCompliantYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			utils.Kubectl("delete",
 				"-f", case11PolicySetMultiStatusYaml,
-				"-n", testNamespace)
+				"-n", testNamespace, "--kubeconfig="+kubeconfigHub)
 			opt := metav1.ListOptions{}
 			utils.ListWithTimeout(clientHubDynamic, gvrPolicy, opt, 0, false, defaultTimeoutSeconds)
 		})

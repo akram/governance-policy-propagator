@@ -10,18 +10,6 @@ metadata:
   name: governance-policy-propagator-leader-election-role
 rules:
 - apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -44,9 +32,38 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  creationTimestamp: null
   name: governance-policy-propagator
 rules:
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resourceNames:
+  - policy-encryption-key
+  resources:
+  - secrets
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  - serviceaccounts/token
+  verbs:
+  - create
 - apiGroups:
   - '*'
   resources:
@@ -63,6 +80,12 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
 - apiGroups:
   - cluster.open-cluster-management.io
   resources:
@@ -82,113 +105,11 @@ rules:
   verbs:
   - get
 - apiGroups:
-  - ""
-  resources:
-  - configmaps
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - events
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - ""
-  resources:
-  - secrets
-  verbs:
-  - create
-- apiGroups:
-  - ""
-  resourceNames:
-  - policy-encryption-key
-  resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
   - policy.open-cluster-management.io
   resources:
   - placementbindings
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
   - policies
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policies/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policies/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
   - policyautomations
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policyautomations/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
-  - policyautomations/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - policy.open-cluster-management.io
-  resources:
   - policysets
   verbs:
   - create
@@ -201,12 +122,16 @@ rules:
 - apiGroups:
   - policy.open-cluster-management.io
   resources:
+  - policies/finalizers
+  - policyautomations/finalizers
   - policysets/finalizers
   verbs:
   - update
 - apiGroups:
   - policy.open-cluster-management.io
   resources:
+  - policies/status
+  - policyautomations/status
   - policysets/status
   verbs:
   - get
@@ -255,16 +180,22 @@ subjects:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
+  labels:
+    webhook-origin: governance-policy-propagator
   name: governance-policy-propagator
 spec:
   replicas: 1
   selector:
     matchLabels:
       name: governance-policy-propagator
+      webhook-origin: governance-policy-propagator
   template:
     metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: governance-policy-propagator
       labels:
         name: governance-policy-propagator
+        webhook-origin: governance-policy-propagator
     spec:
       containers:
       - args:
@@ -289,4 +220,16 @@ spec:
         - containerPort: 8383
           name: http
           protocol: TCP
+        - containerPort: 9443
+          name: webhook-http
+          protocol: TCP
+        volumeMounts:
+        - mountPath: /tmp/k8s-webhook-server/serving-certs
+          name: cert
+          readOnly: true
       serviceAccountName: governance-policy-propagator
+      volumes:
+      - name: cert
+        secret:
+          defaultMode: 420
+          secretName: propagator-webhook-server-cert

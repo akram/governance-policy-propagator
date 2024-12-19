@@ -16,16 +16,17 @@ import (
 	"github.com/go-logr/zapr"
 	"github.com/spf13/pflag"
 	"github.com/stolostron/go-log-utils/zaputil"
+	templates "github.com/stolostron/go-template-utils/v6/pkg/templates"
 	k8sdepwatches "github.com/stolostron/kubernetes-dependency-watches/client"
 	corev1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-
-	// Import all auth plugins so exec-entrypoint and run can use them
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/klog/v2"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
@@ -35,7 +36,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
+	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	//+kubebuilder:scaffold:imports
 	policyv1 "open-cluster-management.io/governance-policy-propagator/api/v1"
@@ -52,6 +58,11 @@ import (
 var (
 	scheme = k8sruntime.NewScheme()
 	log    = ctrl.Log.WithName("setup")
+	crdGVR = schema.GroupVersionResource{
+		Group:    "apiextensions.k8s.io",
+		Version:  "v1",
+		Resource: "customresourcedefinitions",
+	}
 )
 
 func printVersion() {
@@ -88,40 +99,72 @@ func main() {
 
 	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 
-	var metricsAddr string
-	var enableLeaderElection bool
-	var probeAddr string
-	var keyRotationDays, keyRotationMaxConcurrency, policyMetricsMaxConcurrency, policyStatusMaxConcurrency uint
+	var (
+		metricsAddr                 string
+		secureMetrics               bool
+		enableLeaderElection        bool
+		probeAddr                   string
+		keyRotationDays             uint32
+		keyRotationMaxConcurrency   uint16
+		policyMetricsMaxConcurrency uint16
+		policyStatusMaxConcurrency  uint16
+		rootPolicyMaxConcurrency    uint16
+		replPolicyMaxConcurrency    uint16
+		enableWebhooks              bool
+		disablePlacementRule        bool
+	)
 
 	pflag.StringVar(&metricsAddr, "metrics-bind-address", ":8383", "The address the metric endpoint binds to.")
+	pflag.BoolVar(
+		&secureMetrics,
+		"secure-metrics",
+		false,
+		"Enable secure metrics endpoint with certificates at /var/run/metrics-cert",
+	)
 	pflag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	pflag.BoolVar(&enableLeaderElection, "leader-elect", true,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
-	pflag.UintVar(
+	pflag.BoolVar(&enableWebhooks, "enable-webhooks", true,
+		"Enable the policy validating webhook")
+	pflag.Uint32Var(
 		&keyRotationDays,
 		"encryption-key-rotation",
 		30,
 		"The number of days until the policy encryption key is rotated",
 	)
-	pflag.UintVar(
+	pflag.Uint16Var(
 		&keyRotationMaxConcurrency,
 		"key-rotation-max-concurrency",
 		10,
 		"The maximum number of concurrent reconciles for the policy-encryption-keys controller",
 	)
-	pflag.UintVar(
+	pflag.Uint16Var(
 		&policyMetricsMaxConcurrency,
 		"policy-metrics-max-concurrency",
 		5,
 		"The maximum number of concurrent reconciles for the policy-metrics controller",
 	)
-	pflag.UintVar(
+	pflag.Uint16Var(
 		&policyStatusMaxConcurrency,
 		"policy-status-max-concurrency",
 		5,
 		"The maximum number of concurrent reconciles for the policy-status controller",
 	)
+	pflag.Uint16Var(
+		&rootPolicyMaxConcurrency,
+		"root-policy-max-concurrency",
+		2,
+		"The maximum number of concurrent reconciles for the root-policy controller",
+	)
+	pflag.Uint16Var(
+		&replPolicyMaxConcurrency,
+		"replicated-policy-max-concurrency",
+		10,
+		"The maximum number of concurrent reconciles for the replicated-policy controller",
+	)
+	pflag.BoolVar(&disablePlacementRule, "disable-placementrule", false,
+		"Disable watches for PlacementRules.")
 
 	pflag.Parse()
 
@@ -190,37 +233,60 @@ func main() {
 		}
 	}
 
-	// Set a field selector so that a watch on secrets will be limited to just the secret with the policy template
-	// encryption key.
-	newCacheFunc := cache.BuilderWithOptions(
-		cache.Options{
-			SelectorsByObject: cache.SelectorsByObject{
-				&corev1.Secret{}: {
-					Field: fields.SelectorFromSet(fields.Set{"metadata.name": propagatorctrl.EncryptionKeySecret}),
-				},
-			},
-		},
-	)
+	metricsOptions := server.Options{
+		BindAddress: metricsAddr,
+	}
+
+	if secureMetrics {
+		metricsOptions.FilterProvider = filters.WithAuthenticationAndAuthorization
+		metricsOptions.SecureServing = true
+		metricsOptions.CertDir = "/var/run/metrics-cert"
+	}
 
 	// Set default manager options
 	options := ctrl.Options{
-		Namespace:                  namespace,
 		Scheme:                     scheme,
-		MetricsBindAddress:         metricsAddr,
+		Metrics:                    metricsOptions,
 		HealthProbeBindAddress:     probeAddr,
 		LeaderElection:             enableLeaderElection,
 		LeaderElectionID:           "policy-propagator.open-cluster-management.io",
 		LeaderElectionResourceLock: "leases",
-		NewCache:                   newCacheFunc,
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				// Set a field selector so that a watch on secrets will be limited to just the secret with
+				// the policy template encryption key.
+				&corev1.Secret{}: {
+					Field: fields.SelectorFromSet(fields.Set{"metadata.name": propagatorctrl.EncryptionKeySecret}),
+				},
+				&clusterv1.ManagedCluster{}: {
+					Transform: func(obj interface{}) (interface{}, error) {
+						cluster := obj.(*clusterv1.ManagedCluster)
+						// All that ManagedCluster objects are used for is to check their existence to see if a
+						// namespace is a cluster namespace.
+						guttedCluster := &clusterv1.ManagedCluster{}
+						guttedCluster.SetName(cluster.Name)
+
+						return guttedCluster, nil
+					},
+				},
+				&policyv1.Policy{}: {
+					Transform: func(obj interface{}) (interface{}, error) {
+						policy := obj.(*policyv1.Policy)
+						// Remove unused large fields
+						delete(policy.Annotations, "kubectl.kubernetes.io/last-applied-configuration")
+						policy.ManagedFields = nil
+
+						return policy, nil
+					},
+				},
+			},
+		},
 	}
 
-	// Add support for MultiNamespace set in WATCH_NAMESPACE (e.g ns1,ns2)
-	// Note that this is not intended to be used for excluding namespaces, this is better done via a Predicate
-	// Also note that you may face performance issues when using this with a high number of namespaces.
-	// More Info: https://godoc.org/github.com/kubernetes-sigs/controller-runtime/pkg/cache#MultiNamespacedCacheBuilder
 	if strings.Contains(namespace, ",") {
-		options.Namespace = ""
-		options.NewCache = cache.MultiNamespacedCacheBuilder(strings.Split(namespace, ","))
+		for _, ns := range strings.Split(namespace, ",") {
+			options.Cache.DefaultNamespaces[ns] = cache.Config{}
+		}
 	}
 
 	mgr, err := ctrl.NewManager(cfg, options)
@@ -233,6 +299,7 @@ func main() {
 
 	controllerCtx := ctrl.SetupSignalHandler()
 
+	// This is used to trigger reconciles when a related policy set changes due to a dependency on a policy set.
 	dynamicWatcherReconciler, dynamicWatcherSource := k8sdepwatches.NewControllerRuntimeSource()
 
 	dynamicWatcher, err := k8sdepwatches.New(cfg, dynamicWatcherReconciler, nil)
@@ -250,32 +317,78 @@ func main() {
 	}()
 
 	policiesLock := &sync.Map{}
+	replicatedResourceVersions := &sync.Map{}
 
-	if err = (&propagatorctrl.PolicyReconciler{
-		Client:          mgr.GetClient(),
-		Scheme:          mgr.GetScheme(),
-		Recorder:        mgr.GetEventRecorderFor(propagatorctrl.ControllerName),
-		DynamicWatcher:  dynamicWatcher,
-		RootPolicyLocks: policiesLock,
-	}).SetupWithManager(mgr, dynamicWatcherSource); err != nil {
-		log.Error(err, "Unable to create the controller", "controller", propagatorctrl.ControllerName)
+	bufferSize := 1024
+
+	replicatedPolicyUpdates := make(chan event.GenericEvent, bufferSize)
+	replicatedUpdatesSource := source.Channel(replicatedPolicyUpdates, &handler.EnqueueRequestForObject{})
+
+	propagator := propagatorctrl.Propagator{
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Recorder:                mgr.GetEventRecorderFor(propagatorctrl.ControllerName),
+		RootPolicyLocks:         policiesLock,
+		ReplicatedPolicyUpdates: replicatedPolicyUpdates,
+	}
+
+	if err = (&propagatorctrl.RootPolicyReconciler{
+		Propagator: propagator,
+	}).SetupWithManager(mgr, rootPolicyMaxConcurrency); err != nil {
+		log.Error(err, "Unable to create the controller", "controller", "root-policy-spec")
+		os.Exit(1)
+	}
+
+	templateResolver, templatesSource, err := templates.NewResolverWithCaching(
+		controllerCtx,
+		cfg,
+		templates.Config{
+			AdditionalIndentation: 8,
+			DisabledFunctions:     []string{},
+			SkipBatchManagement:   true,
+			StartDelim:            propagatorctrl.TemplateStartDelim,
+			StopDelim:             propagatorctrl.TemplateStopDelim,
+		},
+	)
+	if err != nil {
+		log.Error(err, "Unable to setup the template resolver the controller", "controller", "replicated-policy")
 		os.Exit(1)
 	}
 
 	if reportMetrics() {
 		if err = (&metricsctrl.MetricReconciler{
-			Client:                  mgr.GetClient(),
-			MaxConcurrentReconciles: policyMetricsMaxConcurrency,
-			Scheme:                  mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr, policyMetricsMaxConcurrency); err != nil {
 			log.Error(err, "Unable to create the controller", "controller", metricsctrl.ControllerName)
 			os.Exit(1)
 		}
 	}
 
+	dynamicClient := dynamic.NewForConfigOrDie(mgr.GetConfig())
+
+	// Only check for the CRD if the flag was not set explicitly.
+	if !pflag.Lookup("disable-placementrule").Changed {
+		_, err = dynamicClient.Resource(crdGVR).Get(
+			controllerCtx, "placementrules.apps.open-cluster-management.io", metav1.GetOptions{},
+		)
+		if err != nil {
+			if !k8serrors.IsNotFound(err) {
+				log.Error(err, "Failed to check for the PlacementRule CRD")
+
+				os.Exit(1)
+			}
+
+			log.Info("PlacementRule CRD not found. Disabling PlacementRule watches. Restart the " +
+				"container if the CRD is installed later.")
+
+			disablePlacementRule = true
+		}
+	}
+
 	if err = (&automationctrl.PolicyAutomationReconciler{
 		Client:        mgr.GetClient(),
-		DynamicClient: dynamic.NewForConfigOrDie(mgr.GetConfig()),
+		DynamicClient: dynamicClient,
 		Scheme:        mgr.GetScheme(),
 		Recorder:      mgr.GetEventRecorderFor(automationctrl.ControllerName),
 	}).SetupWithManager(mgr); err != nil {
@@ -287,29 +400,34 @@ func main() {
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),
 		Recorder: mgr.GetEventRecorderFor(policysetctrl.ControllerName),
-	}).SetupWithManager(mgr); err != nil {
+	}).SetupWithManager(mgr, !disablePlacementRule); err != nil {
 		log.Error(err, "Unable to create controller", "controller", policysetctrl.ControllerName)
 		os.Exit(1)
 	}
 
 	if err = (&encryptionkeysctrl.EncryptionKeysReconciler{
-		Client:                  mgr.GetClient(),
-		KeyRotationDays:         keyRotationDays,
-		MaxConcurrentReconciles: keyRotationMaxConcurrency,
-		Scheme:                  mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+		Client:          mgr.GetClient(),
+		KeyRotationDays: keyRotationDays,
+		Scheme:          mgr.GetScheme(),
+	}).SetupWithManager(mgr, keyRotationMaxConcurrency); err != nil {
 		log.Error(err, "Unable to create controller", "controller", encryptionkeysctrl.ControllerName)
 		os.Exit(1)
 	}
 
 	if err = (&rootpolicystatusctrl.RootPolicyStatusReconciler{
-		Client:                  mgr.GetClient(),
-		MaxConcurrentReconciles: policyStatusMaxConcurrency,
-		RootPolicyLocks:         policiesLock,
-		Scheme:                  mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
+		Client:          mgr.GetClient(),
+		RootPolicyLocks: policiesLock,
+		Scheme:          mgr.GetScheme(),
+	}).SetupWithManager(mgr, policyStatusMaxConcurrency, !disablePlacementRule); err != nil {
 		log.Error(err, "Unable to create controller", "controller", rootpolicystatusctrl.ControllerName)
 		os.Exit(1)
+	}
+
+	if enableWebhooks {
+		if err = (&policyv1.Policy{}).SetupWebhookWithManager(mgr); err != nil {
+			log.Error(err, "unable to create webhook", "webhook", "Policy")
+			os.Exit(1)
+		}
 	}
 
 	//+kubebuilder:scaffold:builder
@@ -323,11 +441,6 @@ func main() {
 		log.Error(err, "Unable to set up ready check")
 		os.Exit(1)
 	}
-
-	// Setup config and client for propagator to talk to the apiserver
-	var generatedClient kubernetes.Interface = kubernetes.NewForConfigOrDie(mgr.GetConfig())
-
-	propagatorctrl.Initialize(cfg, &generatedClient)
 
 	cache := mgr.GetCache()
 
@@ -347,12 +460,50 @@ func main() {
 	// This is important to avoid adding watches before the dynamic watcher is ready
 	<-dynamicWatcher.Started()
 
-	log.Info("Starting manager")
+	log.Info("Starting the template resolver service")
 
-	if err := mgr.Start(controllerCtx); err != nil {
-		log.Error(err, "Problem running manager")
+	wg := sync.WaitGroup{}
+
+	resolvers, saTemplatesSource := propagatorctrl.NewTemplateResolvers(
+		controllerCtx, mgr.GetConfig(), mgr.GetClient(), templateResolver, replicatedPolicyUpdates,
+	)
+
+	wg.Add(1)
+
+	go func() {
+		resolvers.WaitForShutdown()
+
+		wg.Done()
+	}()
+
+	replicatedPolicyCtrler := &propagatorctrl.ReplicatedPolicyReconciler{
+		Propagator:        propagator,
+		ResourceVersions:  replicatedResourceVersions,
+		DynamicWatcher:    dynamicWatcher,
+		TemplateResolvers: resolvers,
+	}
+
+	if err = replicatedPolicyCtrler.SetupWithManager(mgr, replPolicyMaxConcurrency,
+		dynamicWatcherSource, replicatedUpdatesSource, templatesSource, saTemplatesSource, !disablePlacementRule,
+	); err != nil {
+		log.Error(err, "Unable to create the controller", "controller", "replicated-policy")
 		os.Exit(1)
 	}
+
+	log.Info("Starting manager")
+
+	wg.Add(1)
+
+	go func() {
+		if err := mgr.Start(controllerCtx); err != nil {
+			log.Error(err, "Problem running manager")
+			os.Exit(1)
+		}
+
+		wg.Done()
+	}()
+
+	wg.Wait()
 }
 
 // reportMetrics returns a bool on whether to report GRC metrics from the propagator
